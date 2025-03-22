@@ -6,8 +6,8 @@ _restypes = ["A","R","N","D","C", "Q", "E", "G", "H", "I", "L", "K", "M", "F", "
 _restypes_with_x = _restypes + ["X"]
 _restypes_with_x_and_gap = _restypes_with_x + ["-"]
 
-restype_order_with_x = None
-restype_order_with_x_and_gap = None
+restype_order_with_x = {}
+restype_order_with_x_and_gap = {}
 
 ##########################################################################
 # TODO: Initialize the variables above as dicts mapping the              #
@@ -15,7 +15,12 @@ restype_order_with_x_and_gap = None
 ##########################################################################
 
 # Replace "pass" statement with your code
-pass
+
+for i, res in enumerate(_restypes_with_x):
+    restype_order_with_x[res] = i
+
+for i, res in enumerate(_restypes_with_x_and_gap):
+    restype_order_with_x_and_gap[res] = i
 
 ##########################################################################
 # END OF YOUR CODE                                                       #
@@ -33,7 +38,7 @@ def load_a3m_file(file_name: str):
         A list of strings where each string represents an individual protein sequence from the input MSA.
     """
 
-    seqs = None
+    seqs = []
 
     ##########################################################################
     # TODO:                                                                  #
@@ -43,8 +48,13 @@ def load_a3m_file(file_name: str):
     # 4. Strip them to remove leading and trailing whitespace                #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    # Get File
+    with open(file_name, 'r') as f:
+        lines = f.readlines()
+
+        for i, line in enumerate(lines):
+            if line.startswith('>'):
+                seqs.append(lines[i+1].strip())
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -78,8 +88,8 @@ def onehot_encode_aa_type(seq, include_gap_token=False):
     #    to create the final one-hot representation. 
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    encoding = torch.tensor([restype_order[res] for res in seq])
+    encoding = nn.functional.one_hot(encoding, num_classes=len(restype_order))
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -87,7 +97,7 @@ def onehot_encode_aa_type(seq, include_gap_token=False):
 
     return encoding
 
-
+from torch.nn.utils.rnn import pad_sequence
 
 def initial_data_from_seqs(seqs):
     """
@@ -144,8 +154,49 @@ def initial_data_from_seqs(seqs):
     #      amino acid distribution.                                          #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    # 1
+    deletion_count_matrix = []
+    unique_seqs = []
+    seq_without_deletions_set = set()
+
+
+    
+    for seq in seqs:
+        seq_without_deletions = ""
+        deletion_count_list = []
+        deletion_count = 0
+
+        for char in seq:
+            if char.islower():
+                deletion_count += 1
+            else:
+                seq_without_deletions += char
+                deletion_count_list.append(deletion_count)
+                deletion_count = 0
+
+        seq_without_deletions = seq_without_deletions
+        
+        if seq_without_deletions not in seq_without_deletions_set:
+            deletion_count_matrix.append(deletion_count_list)
+            unique_seqs.append(seq_without_deletions) # 2
+
+            seq_without_deletions_set.add(seq_without_deletions)
+
+    N_res = max([len(seq) for seq in unique_seqs])
+
+    deletion_count_matrix = [deletion_count_list + [0]*(N_res - len(deletion_count_list)) for deletion_count_list in deletion_count_matrix]
+    deletion_count_matrix = [torch.tensor(deletion_count_list) for deletion_count_list in deletion_count_matrix]
+    deletion_count_matrix = torch.stack(deletion_count_matrix).float()
+
+    # 2 
+    unique_seqs = [seq.ljust(N_res, '-') for seq in unique_seqs]
+    unique_seqs = [onehot_encode_aa_type(seq, True) for seq in unique_seqs]
+    unique_seqs = torch.stack(unique_seqs).float()
+
+    # 3
+    aa_distribution = unique_seqs.mean(dim=0)
+
+
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -194,8 +245,25 @@ def select_cluster_centers(features, max_msa_clusters=512, seed=None):
     #          *  The remaining sequences will be stored with keys prefixed by  'extra_'. 
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    random_indices = torch.randperm(N_seq - 1, generator=gen) + 1
+    random_indices = torch.cat([torch.tensor([0]), random_indices])
+
+    print(f"random_indices shape: {random_indices.shape}")
+
+
+    features['extra_msa_aatype'] = features['msa_aatype'][random_indices[max_msa_clusters:]]
+    features['extra_msa_deletion_count'] = features['msa_deletion_count'][random_indices[max_msa_clusters:]]
+
+    # print(f"extra_msa_aatype shape: {features['extra_msa_aatype'].shape}")
+    # print(f"extra_msa_deletion_count shape: {features['extra_msa_deletion_count'].shape}")
+
+    features['msa_aatype'] = features['msa_aatype'][random_indices[:max_msa_clusters]]
+    features['msa_deletion_count'] = features['msa_deletion_count'][random_indices[:max_msa_clusters]]
+
+    # print(f"msa_aatype shape: {features['msa_aatype'].shape}")
+    # print(f"msa_deletion_count shape: {features['msa_deletion_count'].shape}")
+
+
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -266,7 +334,41 @@ def mask_cluster_centers(features, mask_probability=0.15, seed=None):
     ##########################################################################
 
     # Replace "pass" statement with your code
-    pass
+    random_mask = torch.rand((N_clust, N_res), generator=gen)
+    mask_candidates = random_mask < mask_probability
+
+    print(f"mask_candidates shape: {mask_candidates.shape}")
+    print(f"msa_aatype shape: {features['msa_aatype'].shape}")
+    print(f"msa_aatype filtered: {features['msa_aatype'][mask_candidates].shape}")
+
+    uniform_replacement = torch.tensor([1/20 * odds['uniform_replacement']]*20 + [0, 0])
+    replacement_from_distribution = features['aa_distribution'] * odds['replacement_from_distribution']
+    no_replacement = features['msa_aatype'] * odds['no_replacement']
+    masked_out = torch.ones((N_clust, N_res, 1)) * odds['masked_out']
+
+    uniform_replacement = uniform_replacement.broadcast_to(N_clust, N_res, 22)
+    replacement_from_distribution = replacement_from_distribution.broadcast_to(N_clust, N_res, 22)
+    
+    summed = uniform_replacement + replacement_from_distribution + no_replacement
+    categories_with_mask_token = torch.cat([summed, masked_out], dim=-1)
+
+    print(f"categories_with_mask_token shape: {categories_with_mask_token.shape}")
+    categories_with_mask_token = categories_with_mask_token.flatten(start_dim=0, end_dim=1)
+    print(f"categories_with_mask_token shape after flattened: {categories_with_mask_token.shape}")
+
+    distribution = torch.distributions.Categorical(categories_with_mask_token)
+    sampled_replacements = distribution.sample()
+    print(f"sampled_replacements shape: {sampled_replacements.shape}")
+    sampled_replacements = nn.functional.one_hot(sampled_replacements, num_classes=N_aa_categories)
+    sampled_replacements = sampled_replacements.reshape(N_clust, N_res, N_aa_categories).float()
+    print(f"sampled_replacements one hot shape: {sampled_replacements.shape}")
+
+    features['true_msa_aatype'] = features['msa_aatype'].clone()
+
+    features['msa_aatype'] = torch.concat([features['msa_aatype'], torch.zeros((N_clust, N_res, 1))], dim=-1)
+    features['msa_aatype'][mask_candidates] = sampled_replacements[mask_candidates]
+
+    print(f"msa_aatype shape after masking: {features['msa_aatype'].shape}")
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -310,9 +412,25 @@ def cluster_assignment(features):
     #       the cluster center itself).  Ensure you set the `minlength` parameter appropriately.
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    msa_aatype_slice = features['msa_aatype'][:, :, :-2]
+    extra_msa_aatype_slice = features['extra_msa_aatype'][:, :, :-1]
 
+    print(f"msa_aatype_slice shape: {msa_aatype_slice.shape}")
+    print(f"extra_msa_aatype_slice shape: {extra_msa_aatype_slice.shape}")
+
+    # Agreement shape (N_clust, N_extra)
+    agreement = torch.einsum('ijk,ljk->il', msa_aatype_slice, extra_msa_aatype_slice)
+    print(f"agreement shape: {agreement.shape}")
+    
+    cluster_assignment = torch.argmax(agreement, dim=0)
+    print(f"cluster_assignment shape: {cluster_assignment.shape}")
+    
+    cluster_assignment_counts = torch.bincount(cluster_assignment, minlength=N_clust)
+
+    features['cluster_assignment'] = cluster_assignment
+    features['cluster_assignment_counts'] = cluster_assignment_counts
+
+    print(f"cluster_assignment_counts shape: {cluster_assignment_counts.shape}")
     ##########################################################################
     # END OF YOUR CODE                                                       #
     ##########################################################################
@@ -342,6 +460,8 @@ def cluster_average(feature, extra_feature, cluster_assignment, cluster_assignme
     """
     N_clust, N_res = feature.shape[:2]
     N_extra = extra_feature.shape[0]
+    print(f"N_clust: {N_clust}, N_res: {N_res}, N_extra: {N_extra}")
+
 
     ##########################################################################
     # TODO:
@@ -354,8 +474,25 @@ def cluster_average(feature, extra_feature, cluster_assignment, cluster_assignme
     #     * Divide the accumulated features by the `cluster_assignment_count` + 1 to obtain the average feature representations for each cluster. 
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    # print(f"feature shape (N_clust, N_res, *): {feature.shape}")
+    # print(f"extra_feature shape (N_extra, N_res, *): {extra_feature.shape}")
+    # print(f"cluster_assignment shape (N_extra,): {cluster_assignment.shape}")
+    # print(f"cluster_assignment_count shape (N_clust,): {cluster_assignment_count.shape}")
+
+    unsqueezed_extra_shape = (N_extra,) + (1,) * (extra_feature.dim()-1)
+    unsqueezed_cluster_shape = (N_clust,) + (1,) * (feature.dim()-1)
+
+    cluster_assignment = cluster_assignment.view(unsqueezed_extra_shape).broadcast_to(*extra_feature.shape)
+    cluster_assignment_count = cluster_assignment_count.view(unsqueezed_cluster_shape).broadcast_to(*feature.shape)
+    # print(f"cluster_assignment shape after broadcast: {cluster_assignment.shape}")
+
+    accumulated_extra_features = torch.scatter_add(feature, dim=0, index=cluster_assignment, src=extra_feature)
+    # print(f"accumulated_extra_features shape: {accumulated_extra_features.shape}")
+
+    cluster_average = accumulated_extra_features / (cluster_assignment_count + 1)
+    # print(f"cluster_average shape: {cluster_average.shape}")
+
+    # print("")
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -393,8 +530,18 @@ def summarize_clusters(features):
     #      * Note that at this point, `msa_aatype` is of shape (*, 23), while `extra_msa_aatype` is of shape (*, 22), as the cluster centers were masked. This conflicts with some PyTorch versions, therefore you need to zero-pad `extra_msa_aatype` to match the shape (*, 23).
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    # cluster_average(feature, extra_feature, cluster_assignment, cluster_assignment_count)
+    cluster_deletion_mean = cluster_average(features['msa_deletion_count'], features['extra_msa_deletion_count'], features['cluster_assignment'], features['cluster_assignment_counts'])
+    cluster_deletion_mean =  2/torch.pi * torch.arctan(cluster_deletion_mean/3)
+
+    extra_msa_aatype = features['extra_msa_aatype']
+    extra_msa_aatype= torch.concat([extra_msa_aatype, torch.zeros((*extra_msa_aatype.shape[:-1], 1))], dim=-1)
+
+    cluster_profile = cluster_average(features['msa_aatype'], extra_msa_aatype, features['cluster_assignment'], features['cluster_assignment_counts'])
+
+
+    features['cluster_deletion_mean'] = cluster_deletion_mean
+    features['cluster_profile'] = cluster_profile
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -436,8 +583,13 @@ def crop_extra_msa(features, max_extra_msa_count=5120, seed=None):
     #     * Iterate through the `features` dictionary.  For each key that starts with  'extra_', slice the corresponding value using the selected indices to retain only the first `max_extra_msa_count` sequences.  
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    random_permutation = torch.randperm(N_extra, generator=gen)
+
+    selected_indices = random_permutation[:max_extra_msa_count]
+
+    for key in features.keys():
+        if key.startswith('extra_'):
+            features[key] = features[key][selected_indices]
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -480,8 +632,17 @@ def calculate_msa_feat(features):
     #          - `cluster_deletion_mean`
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    cluster_msa = features['msa_aatype']
+    msa_deletion_count = features['msa_deletion_count'].unsqueeze(-1)
+    cluster_deletion_mean = features['cluster_deletion_mean'].unsqueeze(-1)
+    cluster_profile = features['cluster_profile']
+
+    cluster_has_deletion = msa_deletion_count > 0
+    cluster_deletion_value = 2/torch.pi*torch.arctan(msa_deletion_count/3)
+
+    msa_feat = torch.cat([cluster_msa, cluster_has_deletion, cluster_deletion_value, cluster_profile, cluster_deletion_mean], dim=-1)
+    print(f"msa_feat shape: {msa_feat.shape}")
+
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -523,8 +684,15 @@ def calculate_extra_msa_feat(features):
     #          - `extra_msa_deletion_value`
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    extra_msa_aatype = features['extra_msa_aatype']
+    extra_msa_deletion_count = features['extra_msa_deletion_count'].unsqueeze(-1)
+
+    extra_msa_has_deletion = extra_msa_deletion_count > 0
+    extra_msa_deletion_value = 2 / torch.pi * torch.arctan(extra_msa_deletion_count/3)
+
+    extra_msa = torch.cat([extra_msa_aatype, torch.zeros((N_extra, N_res, 1))], dim=-1)
+    extra_msa_feat = torch.cat([extra_msa, extra_msa_has_deletion, extra_msa_deletion_value], dim=-1)
+
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
@@ -586,8 +754,28 @@ def create_features_from_a3m(file_name, seed=None):
     #     * Create a `residue_index` tensor using `torch.arange(len(seqs[0]))`.
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+
+    seqs = load_a3m_file(file_name)
+    features = initial_data_from_seqs(seqs)
+
+    transforms = [
+        lambda x: select_cluster_centers(x, seed=select_clusters_seed),
+        lambda x: mask_cluster_centers(x, seed=mask_clusters_seed),
+        cluster_assignment,
+        summarize_clusters,
+        lambda x: crop_extra_msa(x, seed=crop_extra_seed)
+    ]
+
+    for transform in transforms:
+        features = transform(features)
+
+    msa_feat = calculate_msa_feat(features)
+    extra_msa_feat = calculate_extra_msa_feat(features)
+
+    # Note: In the official openfold implementation, the one-hot encoding
+    # is padded with zeroes for compatibility with domain datasets for the target_feat
+    target_feat = onehot_encode_aa_type(seqs[0], include_gap_token=False).float()
+    residue_index = torch.arange(len(seqs[0]))
 
     ##########################################################################
     # END OF YOUR CODE                                                       #
