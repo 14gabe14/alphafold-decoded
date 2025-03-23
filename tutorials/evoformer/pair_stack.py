@@ -34,8 +34,15 @@ class TriangleMultiplication(nn.Module):
         #   linear_b_p and linear_z.                                             #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.layer_norm_in = nn.LayerNorm(c_z)
+        self.layer_norm_out = nn.LayerNorm(c)
+        self.linear_a_p = nn.Linear(c_z, c)
+        self.linear_a_g = nn.Linear(c_z, c)
+        self.linear_b_p = nn.Linear(c_z, c)
+        self.linear_b_g = nn.Linear(c_z, c)
+        self.linear_g = nn.Linear(c_z, c_z)
+        self.linear_z = nn.Linear(c, c_z)
+        self.sigmoid = nn.Sigmoid()
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -63,8 +70,19 @@ class TriangleMultiplication(nn.Module):
         #   using torch.einsum.                                                  #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        z = self.layer_norm_in(z)
+        a = self.sigmoid(self.linear_a_g(z)) * self.linear_a_p(z)
+        b = self.sigmoid(self.linear_b_g(z)) * self.linear_b_p(z)
+        g = self.sigmoid(self.linear_g(z))
+
+        if self.mult_type == 'incoming':
+            _z = torch.einsum("...kic,...kjc->...ijc", a, b)
+        else:
+            _z = torch.einsum("...ikc,...jkc->...ijc", a, b)
+
+        out = g * self.linear_z(self.layer_norm_out(_z))
+
+        
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -105,8 +123,12 @@ class TriangleAttention(nn.Module):
         #   ending node, it is the other way around.                             #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.layer_norm = nn.LayerNorm(c_z)
+        self.linear = nn.Linear(c_z, N_head, bias=False)
+        if node_type == 'starting_node':
+            self.mha = MultiHeadAttention(c_in=c_z, c=c, N_head=N_head, attn_dim=-2, gated=True)
+        else:
+            self.mha = MultiHeadAttention(c_in=c_z, c=c, N_head=N_head, attn_dim=-3, gated=True)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -136,9 +158,15 @@ class TriangleAttention(nn.Module):
         #   outgoing bias b_ik: The bias is transposed.                          #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        z = self.layer_norm(z) # (*, N_res, N_res, c_z)
+        b = self.linear(z) # (*, N_res, N_res, N_head)
+        # Bias should have shape (*, N_head, N_res, N_res)
+        b = b.moveaxis(-1, -3)
 
+        # transpose last two dims for ending node 
+        b = b.moveaxis(-1, -2) if self.node_type == 'ending_node' else b
+        out = self.mha(z, b)
+        
         ##########################################################################
         #               END OF YOUR CODE                                         #
         ##########################################################################
@@ -166,8 +194,9 @@ class PairTransition(nn.Module):
         # TODO: Initialize the modules layer_norm, linear_1, relu and linear_2.  #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.layer_norm = nn.LayerNorm(c_z)
+        self.linear_1 = nn.Linear(c_z, n * c_z)
+        self.linear_2 = nn.Linear(n * c_z, c_z)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -190,8 +219,9 @@ class PairTransition(nn.Module):
         # TODO: Implement the forward pass for Algorithm 15.                     #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        out = self.layer_norm(z)
+        out = self.linear_1(out)
+        out = self.linear_2(nn.functional.relu(out))
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -220,8 +250,13 @@ class PairStack(nn.Module):
         #   dropout_rowwise and dropout_columnwise.                              #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.dropout_rowwise = DropoutRowwise(p=0.25)
+        self.dropout_columnwise = DropoutColumnwise(p=0.25)
+        self.tri_mul_out = TriangleMultiplication(c_z, 'outgoing')
+        self.tri_mul_in = TriangleMultiplication(c_z, 'incoming')
+        self.tri_att_start = TriangleAttention(c_z, 'starting_node')
+        self.tri_att_end = TriangleAttention(c_z, 'ending_node')
+        self.pair_transition = PairTransition(c_z)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -243,9 +278,14 @@ class PairStack(nn.Module):
         ##########################################################################
         # TODO: Implement the forward pass for the pair stack from Algorithm 6.  #
         ##########################################################################
+        z = z + self.dropout_rowwise(self.tri_mul_out(z))
+        z = z + self.dropout_rowwise(self.tri_mul_in(z))
+        z = z + self.dropout_rowwise(self.tri_att_start(z))
+        z = z + self.dropout_columnwise(self.tri_att_end(z))
+        z = z + self.pair_transition(z)
 
-        # Replace "pass" statement with your code
-        pass
+        out = z
+        
 
         ##########################################################################
         #               END OF YOUR CODE                                         #

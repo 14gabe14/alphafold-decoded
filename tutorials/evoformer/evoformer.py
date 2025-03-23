@@ -25,9 +25,12 @@ class EvoformerBlock(nn.Module):
         #   inference) dropout_rowwise_m.                                        #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
-
+        self.msa_att_row = MSARowAttentionWithPairBias(c_m, c_z)
+        self.msa_att_col = MSAColumnAttention(c_m)
+        self.msa_transition = MSATransition(c_m)
+        self.outer_product_mean = OuterProductMean(c_m, c_z)
+        self.core = PairStack(c_z)
+        self.dropout_rowwise_m = DropoutRowwise(0.15)
         ##########################################################################
         #               END OF YOUR CODE                                         #
         ##########################################################################
@@ -48,8 +51,13 @@ class EvoformerBlock(nn.Module):
         # TODO: Implement  the forward pass for Algorithm 6.                     #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        m = m + self.dropout_rowwise_m(self.msa_att_row(m, z))
+        m = m + self.msa_att_col(m)
+        m = m + self.msa_transition(m)
+
+        z = z + self.outer_product_mean(m)
+
+        z = self.core(z)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -80,8 +88,11 @@ class EvoformerStack(nn.Module):
         #   and self.linear as the extraction of the single representation.      #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.blocks = nn.ModuleList([
+            EvoformerBlock(c_m, c_z) for _ in range(num_blocks)
+        ])
+
+        self.linear = nn.Linear(c_m, c_s)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -108,8 +119,10 @@ class EvoformerStack(nn.Module):
         #   of the msa representation.                                           #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        for block in self.blocks:
+            m, z = block(m, z)
+
+        s = self.linear(m.select(-3, 0))
 
         ##########################################################################
         #               END OF YOUR CODE                                         #

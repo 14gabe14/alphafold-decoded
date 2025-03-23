@@ -14,8 +14,8 @@ class SharedDropout(nn.Module):
         #        nn.Dropout module for the forward pass.                         #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.shared_dim = shared_dim
+        self.dropout = nn.Dropout(p)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -43,9 +43,12 @@ class SharedDropout(nn.Module):
         #           out the values. The mask is implicitly broadcasted to the    #
         #           shape of x.                                                  #
         ##########################################################################
+        mask_shape = (*x.shape[:self.shared_dim], 1, *x.shape[self.shared_dim+1:])
+        mask = torch.ones(mask_shape)
 
-        # Replace "pass" statement with your code
-        pass
+        mask = self.dropout(mask)
+
+        out = mask * x
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -60,8 +63,7 @@ class DropoutRowwise(SharedDropout):
         #        dimension for row-wise dropout.                                 #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        super().__init__(-3, p)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -75,7 +77,7 @@ class DropoutColumnwise(SharedDropout):
         ##########################################################################
 
         # Replace "pass" statement with your code
-        pass
+        super().__init__(-2, p)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #

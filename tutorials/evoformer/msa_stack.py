@@ -25,8 +25,11 @@ class MSARowAttentionWithPairBias(nn.Module):
         #        one value per head, therefore c_out is N_head.                  #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.layer_norm_m = nn.LayerNorm(c_m)
+        self.layer_norm_z = nn.LayerNorm(c_z)
+        self.linear_z = nn.Linear(c_z, N_head, bias = False)
+        self.mha = MultiHeadAttention(c_m, c, N_head, attn_dim=-2, gated=True)
+
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -50,8 +53,12 @@ class MSARowAttentionWithPairBias(nn.Module):
         #       (*, N_head, z, z) for MultiHeadAttention.                        #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        m = self.layer_norm_m(m)
+        z = self.layer_norm_z(z)
+        b = self.linear_z(z)
+        b = b.movedim(-1, -3)
+
+        out = self.mha(m, bias=b)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -78,8 +85,8 @@ class MSAColumnAttention(nn.Module):
         # TODO: Initialize the modules layer_norm_m and mha for Algorithm 8.     #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.layer_norm_m = nn.LayerNorm(c_m)
+        self.mha = MultiHeadAttention(c_m, c, N_head, attn_dim=-3, gated=True)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -102,8 +109,8 @@ class MSAColumnAttention(nn.Module):
         # TODO: Implement the forward pass for Algorithm 8.                      #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        m = self.layer_norm_m(m)
+        out = self.mha(m)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -132,8 +139,10 @@ class MSATransition(nn.Module):
         #   for Algorithm 9.
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.layer_norm = nn.LayerNorm(c_m)
+        self.linear_1 = nn.Linear(c_m, n*c_m)
+        self.relu = nn.ReLU()
+        self.linear_2 = nn.Linear(n*c_m, c_m)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -154,10 +163,12 @@ class MSATransition(nn.Module):
         ##########################################################################
         # TODO: Implement the forward pass for Algorithm 9.                      #
         ##########################################################################
-
-        # Replace "pass" statement with your code
-        pass
-
+        # print(m.shape)
+        m = self.layer_norm(m)
+        a = self.linear_1(m)
+        # print(a.shape)
+        out = self.linear_2(self.relu(a))
+        # print(out.shape)
         ##########################################################################
         #               END OF YOUR CODE                                         #
         ##########################################################################
@@ -186,8 +197,10 @@ class OuterProductMean(nn.Module):
         #   while linear_2 creates the embedding for b.                          #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.layer_norm = nn.LayerNorm(c_m)
+        self.linear_1 = nn.Linear(c_m, c)
+        self.linear_2 = nn.Linear(c_m, c)
+        self.linear_out = nn.Linear(c*c, c_z)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -221,8 +234,16 @@ class OuterProductMean(nn.Module):
         #   can be computed efficiently using torch.einsum.                      #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        m = self.layer_norm(m)
+        a = self.linear_1(m)
+        b = self.linear_2(m)
+
+        o = torch.einsum("...ski,...slj -> ...klij", a, b)
+        
+        o = o.flatten(start_dim=-2)
+
+        z = self.linear_out(o) / N_seq
+
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
