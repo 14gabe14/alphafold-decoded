@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-
+import torch.nn.functional as F
 class InputEmbedder(nn.Module):
     """
     Implements Algorithm 3 and Algorithm 4.
@@ -23,6 +23,8 @@ class InputEmbedder(nn.Module):
         self.tf_dim = tf_dim
         self.vbins = vbins
 
+        print({k: v for k, v in locals().items()})
+
         ##########################################################################
         # TODO: Initialize the modules linear_tf_z_i, linear_tf_z_j,             #
         #   linear_tf_m, linear_msa_m (from Algorithm 3) and linear_rel_pos      #
@@ -32,8 +34,11 @@ class InputEmbedder(nn.Module):
         #   that is used throughout the Evoformer.                               #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.linear_tf_z_i = nn.Linear(tf_dim, c_z)
+        self.linear_tf_z_j = nn.Linear(tf_dim, c_z)
+        self.linear_tf_m = nn.Linear(tf_dim, c_m)
+        self.linear_msa_m = nn.Linear(msa_feat_dim, c_m)
+        self.linear_relpos = nn.Linear(vbins*2+1, c_z)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -70,8 +75,13 @@ class InputEmbedder(nn.Module):
         #   * use the linear module to create the output embedding.              #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        residue_index = residue_index.long()
+        d = residue_index.unsqueeze(-1) - residue_index.unsqueeze(-2)
+        d = torch.clamp(d, min=-self.vbins, max=self.vbins)
+        d = d + self.vbins
+        d = F.one_hot(d, 2*self.vbins+1).to(dtype)
+
+        out = self.linear_relpos(d)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -110,8 +120,24 @@ class InputEmbedder(nn.Module):
         #   the number of dimensions of msa_feat.                                #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        # print(f"msa_feat {msa_feat.shape}")
+        # print(f"target_feat {target_feat.shape}")
+        # print(f"residue_index {residue_index.shape}")
+
+        a = self.linear_tf_z_i(target_feat)
+        b = self.linear_tf_z_j(target_feat)
+
+        a = a.unsqueeze(-2)    
+        b = b.unsqueeze(-3)
+
+        z = a + b
+
+        z = z + self.relpos(residue_index)
+
+        msa_m = self.linear_msa_m(msa_feat) # to shape (*, N_seq, N_res, c_m)
+        tf_m = self.linear_tf_m(target_feat) # to shape (*, N_res, c_m)
+        tf_m = tf_m. unsqueeze(-3)
+        m = msa_m + tf_m
 
         ##########################################################################
         #               END OF YOUR CODE                                         #

@@ -23,8 +23,9 @@ class RecyclingEmbedder(nn.Module):
         # TODO: Initialize the modules layer_norm_m, layer_norm_z and linear.    #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.layer_norm_m = nn.LayerNorm(c_m)
+        self.layer_norm_z = nn.LayerNorm(c_z)
+        self.linear = nn.Linear(self.bin_count, c_z)
 
         ##########################################################################
         # END OF YOUR CODE                                                       #
@@ -71,9 +72,27 @@ class RecyclingEmbedder(nn.Module):
         #   lowest bin, but to no class at all.                                  #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        # x_prev (*, N_res, 3)
+        x_prev_i = x_prev.unsqueeze(-2)
+        x_prev_j = x_prev.unsqueeze(-3)
 
+        d = x_prev_i - x_prev_j # shape (*, N_res, N_res, 3) 
+        d = torch.linalg.vector_norm(d, dim=-1) # shape (*, N_res, N_res) 
+
+        # bounds shape (15)
+        lower_bounds = torch.linspace(start=self.bin_start, end=self.bin_end, steps=self.bin_count, device=x_prev.device)
+        upper_bounds = torch.cat((lower_bounds[1:], torch.tensor([1e8], device=x_prev.device)))
+
+        bins = d.unsqueeze(-1) # shape (*, N_res, N_res, 1) 
+
+        d = (bins > lower_bounds) * (bins < upper_bounds) # (*, N_res, N_res, 15) 
+        d = d.type(x_prev.dtype)
+        d = self.linear(d) # (*, N_res, N_res, c_z) 
+
+        z_out = d + self.layer_norm_z(z_prev) # (*, N_res, N_res, c_z) 
+
+        m_out = self.layer_norm_m(m_prev[..., 0, :, :])
+        
         ##########################################################################
         # END OF YOUR CODE                                                       #
         ##########################################################################
