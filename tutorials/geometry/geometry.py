@@ -3,6 +3,7 @@ from torch import nn
 # from tests.structure_module.residue_constants import rigid_group_atom_position_map, chi_angles_mask
 from geometry.residue_constants import rigid_group_atom_position_map, chi_angles_mask,  chi_angles_chain
 from geometry import residue_constants
+from torch import linalg as LA
 
 def create_3x3_rotation(ex, ey):
     """
@@ -29,9 +30,20 @@ def create_3x3_rotation(ex, ey):
     #  Make your to broadcast correctly, to allow for any number of          #
     #  leading dimensions.                                                   #
     ##########################################################################
+    
+    ex = ex / LA.vector_norm(ex, dim=-1, keepdim = True)
 
-    # Replace "pass" statement with your code
-    pass
+    projection = torch.einsum("...i,...i->...", ex, ey).unsqueeze(-1) 
+    projection = projection * ex
+
+    ey = ey - projection
+
+    ey = ey / LA.vector_norm(ey, dim=-1, keepdim = True)
+
+    ez = LA.cross(ex, ey, dim=-1)
+
+    R = torch.stack((ex, ey, ez), dim=-1)
+   
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -59,8 +71,10 @@ def quat_from_axis(phi, n):
     #   reshape phi to allow for broadcasting and concatenation.             # 
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    phi = phi.unsqueeze(-1)
+    cos_phi = torch.cos(phi/2)
+    sin_phi = torch.sin(phi/2)
+    q = torch.cat((cos_phi, sin_phi * n), dim=-1)
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -79,7 +93,7 @@ def quat_mul(q1, q2):
     Returns:
         torch.tensor: Quaternion of shape (*, 4).
     """
-    
+
     a1 = q1[...,0:1] # a1 has shape (*, 1)
     v1 = q1[..., 1:] # v1 has shape (*, 3)
     a2 = q2[...,0:1] # a2 has shape (*, 1)
@@ -91,8 +105,11 @@ def quat_mul(q1, q2):
     # TODO: Implement batched quaternion multiplication.                     # 
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    temp_1 = a1 * a2 - torch.sum(v1 * v2, dim=-1, keepdim=True)
+    temp_2 = a1 * v2 + a2 * v1 + LA.cross(v1, v2, dim=-1)
+
+    q_out = torch.cat((temp_1, temp_2), dim=-1)
+
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -117,10 +134,9 @@ def conjugate_quat(q):
     ##########################################################################
     # TODO: Implement quaternion conjugation.                                # 
     ##########################################################################
-
-    # Replace "pass" statement with your code
-    pass
-
+    q_out = q.clone()
+    q_out[..., 1:4] = -q[..., 1:4]
+    
     ##########################################################################
     #               END OF YOUR CODE                                         #
     ##########################################################################
@@ -147,9 +163,13 @@ def quat_vector_mul(q, v):
     # TODO: Implement batched quaternion vector multiplication.              # 
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    v_quat = torch.cat((torch.zeros(*batch_shape, 1).to(q.device).to(q.dtype), v), dim=-1)
 
+    q_conjugate = conjugate_quat(q)
+
+    v_out = quat_mul(quat_mul(q, v_quat), q_conjugate)
+    
+    v_out = v_out[..., 1:4]
     ##########################################################################
     #               END OF YOUR CODE                                         #
     ##########################################################################
@@ -173,8 +193,21 @@ def quat_to_3x3_rotation(q):
     #   - Rotate these vectors by q and assemble the result into a matrix.   #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    x = torch.tensor([1.0, 0.0, 0.0], dtype=q.dtype, device=q.device)
+    y = torch.tensor([0.0, 1.0, 0.0], dtype=q.dtype, device=q.device)
+    z = torch.tensor([0.0, 0.0, 1.0], dtype=q.dtype, device=q.device)
+
+    batch_size = q.shape[:-1]
+    x = x.broadcast_to((*batch_size, 3))
+    y = y.broadcast_to((*batch_size, 3))
+    z = z.broadcast_to((*batch_size, 3))
+
+    x = quat_vector_mul(q, x)
+    y = quat_vector_mul(q, y)
+    z = quat_vector_mul(q, z)
+
+    R = torch.stack((x, y, z), dim=-1)
+
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -203,8 +236,19 @@ def assemble_4x4_transform(R, t):
     #   - Concatenate Rt and the pad along the row axis.                     #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    t = t.unsqueeze(-1)
+
+    T = torch.cat((R, t), dim=-1)
+    # print(T.shape)
+    pad = torch.tensor([0, 0, 0, 1], dtype=R.dtype, device=R.device)
+    pad = pad.unsqueeze(0)
+
+    pad_dim = (*T.shape[:-2],) + (1, 4)
+    # print(pad_dim)
+    pad = torch.broadcast_to(pad, pad_dim)
+
+
+    T = torch.cat((T, pad), dim=-2)
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -234,9 +278,22 @@ def warp_3d_point(T, x):
     # TODO: Implement the method according to the method description.        #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    # print(x.shape)
+    # print(T.shape)
 
+    pad = torch.ones(x.shape[:-1]+(1,), dtype=dtype, device=device)
+    x = torch.cat((x, pad), dim=-1)
+    x = x.unsqueeze(-1)
+
+    # print(x.shape)
+    
+    x_warped = T @ x
+    x_warped = x_warped.squeeze(-1)
+    x_warped = x_warped[..., 0:3]
+
+    
+
+    # print(x_warped.shape)
     ##########################################################################
     #               END OF YOUR CODE                                         #
     ##########################################################################
@@ -267,8 +324,8 @@ def create_4x4_transform(ex, ey, translation):
     #   using the methods you constructed earlier.                           # 
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    R = create_3x3_rotation(ex, ey)
+    T = assemble_4x4_transform(R, translation)
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -294,8 +351,17 @@ def invert_4x4_transform(T):
     # TODO: Implement the 4x4 transform inversion.                           # 
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    R = T[..., 0:3, 0:3] # (*, 3, 3)
+    t = T[..., 0:3, 3] # (*, 3)
+    t = t.unsqueeze(-1)
+
+    R_t = R.transpose(-1, -2)
+
+    new_t = - R_t @ t # (*, 3, 1)
+    new_t = new_t.squeeze(-1) # (*, 3)
+
+    inv_T = assemble_4x4_transform(R_t, new_t)
+
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -304,7 +370,7 @@ def invert_4x4_transform(T):
     return inv_T
 
 def makeRotX(phi):
-    """
+    """ 
     Creates a 4x4 transform for rotation of phi around the X axis.
     phi is given as (cos(phi), sin(phi)).
     The matrix is constructed according to
@@ -331,8 +397,13 @@ def makeRotX(phi):
     #   with a translation of 0 to a 4x4 transformation.                     #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    T = torch.eye(4, dtype=dtype, device=device)
+    if len(batch_shape) > 0:
+        T = torch.broadcast_to(T, batch_shape+(4,4)).clone()
+    T[..., 1, 1] = phi1
+    T[..., 1, 2] = -phi2
+    T[..., 2, 1] = phi2
+    T[..., 2, 2] = phi1
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -379,8 +450,25 @@ def calculate_non_chi_transforms():
     #   the amino acid indices and the values jointly.                       #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    non_chi_transforms = torch.zeros((20, 4, 4, 4))
+
+    identity = torch.eye(4).unsqueeze(0).unsqueeze(0) # (1, 1, 4, 4)
+    identity = identity.broadcast_to((20, 2, 4, 4)).clone()
+
+    non_chi_transforms[:, 0:2, :, :]  = identity
+
+    for i, entries in enumerate(rigid_group_atom_position_map.values()):
+
+        phi_group = create_4x4_transform(entries['N'] - entries['CA'], torch.tensor([1.0, 0.0, 0.0]), entries['N'])
+        # phi_group = phi_group.unsqueeze(0).unsqueeze(0)
+
+        non_chi_transforms[i, 2, : :] = phi_group
+
+        psi_group = create_4x4_transform(entries['C'] - entries['CA'], entries['CA'] - entries['N'], entries['C'])
+        # psi_group = psi_group.unsqueeze(0).unsqueeze(0)
+
+        non_chi_transforms[i, 3, : :] = psi_group
+        
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -438,8 +526,35 @@ def calculate_chi_transforms():
     #       to differentiate between chi1 and the other transforms.          #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    chi_transforms = torch.zeros((20, 4, 4, 4))
+
+    for i, (aa, entries) in enumerate(rigid_group_atom_position_map.items()):
+        for j in range(4):
+            if not chi_angles_mask[i][j]:
+                chi_transforms[i, j, :, :] = torch.eye(4)
+                continue
+            
+            # if j == 0:
+            #     prev_atom = entries['N']
+            #     current_atom = entries['CA']
+            # else:
+            #     prev_atom = current_atom
+            #     current_atom = next_atom
+            
+            # next_atom = entries[chi_angles_chain[aa][j]]
+            #chi_transforms[i, j, :, :] = create_4x4_transform(next_atom-current_atom, prev_atom-current_atom, next_atom)
+
+            next_atom = chi_angles_chain[aa][j]
+
+            if j==0:
+                ex = entries[next_atom] - entries['CA']
+                ey = entries['N'] - entries['CA']
+                
+            else:
+                ex = entries[next_atom]
+                ey = torch.tensor([-1.0,0.0,0.0])
+
+            chi_transforms[i, j, :, :] = create_4x4_transform(ex, ey, entries[next_atom])
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -462,8 +577,7 @@ def precalculate_rigid_transforms():
     # TODO: Concatenate the non-chi transforms and chi transforms.           # 
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    rigid_transforms = torch.cat((calculate_non_chi_transforms(), calculate_chi_transforms()), dim=1)
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
@@ -516,14 +630,30 @@ def compute_global_transforms(T, alpha, F):
     #   - Stack the global transforms.                                       #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    alpha = alpha / LA.vector_norm(alpha, dim=-1, keepdim=True)
+    (omega, phi, psi, chi1, chi2, chi3, chi4) = torch.unbind(alpha, dim=-2)
+
+    all_rigid_transforms = precalculate_rigid_transforms().to(device=device, dtype=dtype)
+
+    local_transforms = all_rigid_transforms[F] # (N_res, 8, 4, 4)
+
+    global_transforms = torch.zeros_like(local_transforms)
+
+    global_transforms[..., 0, :, :] = T
+
+    for i, angle in enumerate([omega, phi, psi, chi1], start=1):
+        global_transforms[..., i, :, :] = T @ local_transforms[..., i, :, :] @ makeRotX(angle)
+    
+    for i, angle in enumerate([chi2, chi3, chi4], start=5):
+        global_transforms[..., i, :, :] = global_transforms[..., i-1, :, :] @ local_transforms[..., i, :, :] @ makeRotX(angle)
+
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
     ##########################################################################
 
     return global_transforms
+
 
 def compute_all_atom_coordinates(T, alpha, F):
     """
@@ -548,6 +678,7 @@ def compute_all_atom_coordinates(T, alpha, F):
     global_positions, atom_mask = None, None
     device = T.device
     dtype = T.dtype
+    N_res = T.shape[-3]
 
     ##########################################################################
     # TODO: Implement Algorithm 24. You can follow these steps:              # 
@@ -569,8 +700,29 @@ def compute_all_atom_coordinates(T, alpha, F):
     #       atom positions.                                                  #
     ##########################################################################
 
-    # Replace "pass" statement with your code
-    pass
+    global_frames = compute_global_transforms(T, alpha, F) # (N_res, 8, 4, 4)
+    
+    atom_local_positions = residue_constants.atom_local_positions.to(device) # (20, 37, 3)
+    atom_frame_inds = residue_constants.atom_frame_inds.to(device) # (20, 37)
+    atom_mask = residue_constants.atom_mask.to(device) # (20, 37)
+
+    atom_local_positions = atom_local_positions[F, ...] # (..., N_res, 37, 3)
+    atom_frame_inds = atom_frame_inds[F, ...] # (..., N_res, 37)
+    atom_mask = atom_mask[F, ...] # (..., N_res, 37)
+
+    gather_index = atom_frame_inds.unsqueeze(-1).unsqueeze(-1) # (..., N_res, 37, 1, 1)
+    gather_index = gather_index.expand(*atom_frame_inds.shape, 4, 4) # (..., N_res, 37, 4, 4)
+
+    # gather => shape (..., N_res, 37, 4, 4)
+    selected_frames = torch.gather(global_frames, dim=-3, index=gather_index)
+
+    ones = torch.ones(*atom_local_positions.shape[:-1], 1, dtype=dtype, device=device)
+
+    atom_local_positions = torch.cat((atom_local_positions, ones), dim=-1) # (N_res, 37, 4)
+
+    global_positions = torch.einsum('...ij,...j->...i', selected_frames, atom_local_positions) # (N_res, 37, 4)
+    
+    global_positions = global_positions[..., :3]
 
     ##########################################################################
     #               END OF YOUR CODE                                         #
