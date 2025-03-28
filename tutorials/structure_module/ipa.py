@@ -51,8 +51,30 @@ class InvariantPointAttention(nn.Module):
         #   for the computation of gamma.                                        #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.linear_q = nn.Linear(c_s, c*N_head) # (*, N_res, c_s) -> (*, N_res, N_head*c)
+        self.linear_k = nn.Linear(c_s, c*N_head)
+        self.linear_v = nn.Linear(c_s, c*N_head)
+
+        self.linear_q_points = nn.Linear(c_s, 3*N_head*n_query_points) # -> (*, N_head*3*n_query_points) -> (*, 3, N_head, n_query_points)
+        self.linear_k_points = nn.Linear(c_s, 3*N_head*n_query_points)
+        self.linear_v_points = nn.Linear(c_s, 3*N_head*n_point_values) # -> (*, N_head*3*n_point_values) -> (*, 3, N_head, n_point_values)
+
+        self.linear_b = nn.Linear(c_z, N_head) # (*, N_res, N_res, c_z) -> (*, N_res, N_res, N_head)
+
+        self.linear_out = nn.Linear(N_head*(c_z+c+4*n_point_values), c_s)
+
+        self.head_weights = nn.Parameter(torch.zeros(N_head))
+        self.soft_plus = nn.Softplus()
+
+        # a: (*, N_head, N_res, N_res)
+
+        # o_dash_hi: (*, N_res, N_head, c_z)
+        # o_hi: (*, N_res, N_head, c)
+        # o_hpi: (*, N_res, N_head, n_point_values, 3)
+        # o_hpi_norm: (*, N_res, N_head, n_point_values, 1)
+
+        # out (*, N_res, N_head*(c_z+c+4*n_point_values)) -> (*, N_res, c_s) 
+
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -79,6 +101,7 @@ class InvariantPointAttention(nn.Module):
         n_head = self.N_head
         n_qp = self.n_query_points
         n_pv = self.n_point_values
+        batch_dim = s.shape[:-1]
 
         embeddings = None
 
@@ -91,8 +114,42 @@ class InvariantPointAttention(nn.Module):
         #   - Move the dimensions to match the shapes in the method description. # 
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        # (*, N_res, c_z) -> (*, N_res, N_head*c)
+        q = self.linear_q(s) 
+        k = self.linear_k(s)
+        v = self.linear_v(s)
+
+        # -> (*, N_res, N_head, c)
+        q = q.view(*batch_dim,n_head, c)
+        k = k.view(*batch_dim,n_head, c)
+        v = v.view(*batch_dim,n_head, c)
+
+        # -> (*, N_head, N_res, c)
+        q = torch.transpose(q, -2, -3)
+        k = torch.transpose(k, -2, -3)
+        v = torch.transpose(v, -2, -3)
+
+        # (*, N_res, c_z) -> (*, N_res, N_head*3*N_points)
+        qp = self.linear_q_points(s) 
+        kp = self.linear_k_points(s)
+        vp = self.linear_v_points(s)
+
+        # (*, N_res, 3, N_head, N_points)
+        qp = qp.view(*batch_dim, 3, n_head, n_qp)
+        kp = kp.view(*batch_dim, 3, n_head, n_qp)
+        vp = vp.view(*batch_dim, 3, n_head, n_pv)
+
+        # (*, N_head, N_res, 3, N_points)
+        qp = torch.movedim(qp, -2, -4)
+        kp = torch.movedim(kp, -2, -4)
+        vp = torch.movedim(vp, -2, -4)
+
+        # -> (*, N_head, N_points, N_res, 3)
+        qp = torch.movedim(qp, -1, -3)
+        kp = torch.movedim(kp, -1, -3)
+        vp = torch.movedim(vp, -1, -3)
+
+        embeddings = (q, k, v, qp, kp, vp)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -125,7 +182,7 @@ class InvariantPointAttention(nn.Module):
         #     against the attention scores.                                      #
         #   - Scale q and compute the bias. Move the dimension of the bias so    # 
         #     that it matches the attention scores.                              #
-        #   - Compute the qk term. You can use torch.einsum for this.            # 
+        #   - Compute the qk term. You can use torch.einsum for this.            #  
         #   - Reshape the transforms so that they can be used for batched        # 
         #     matrix multiplication against the query and key points.            #
         #   - Use warp_3d_point to warp the query and key points through T.      # 
@@ -133,8 +190,45 @@ class InvariantPointAttention(nn.Module):
         #   - Compute the full attention scores.                                 # 
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        # compute scalars
+        w_C = math.sqrt(2/(9*self.n_query_points))
+        w_L = math.sqrt(1/3)
+        gamma = self.soft_plus(self.head_weights) # (N_head,)
+        gamma = gamma.unsqueeze(-1).unsqueeze(-1) # (N_head,1,1)
+
+        # scale q
+        q = q /math.sqrt(self.c)
+
+        # compute bias
+        b = self.linear_b(z) # (*, N_res, N_res, c_z) -> (*, N_res, N_res, N_head)
+        b = torch.movedim(b, -1, -3) # -> (*, N_head, N_res, N_res)
+
+        # compute qk (*, N_head, N_res, N_res).
+        qk = q @ k.mT 
+
+        # broadcast T
+        T = T.unsqueeze(-4).unsqueeze(-4)
+        T = torch.broadcast_to(T, qp.shape[:-1]+(4,4)) # -> (*, N_head, N_query_points, N_res, 4, 4)
+
+        warped_qp = warp_3d_point(T, qp) # -> (*, N_head, N_query_points, N_res, 3)
+        warped_kp = warp_3d_point(T, kp) # -> (*, N_head, N_query_points, N_res, 3)
+
+        warped_qp = warped_qp.transpose(-1, -2) # -> (*, N_head, N_query_points, 3, N_res)
+        warped_qp = warped_qp.unsqueeze(-1) # -> (*, N_head, N_query_points, 3, N_res, 1)
+
+        warped_kp = warped_kp.transpose(-1, -2) # -> (*, N_head, N_query_points, 3, N_res)
+        warped_kp = warped_kp.unsqueeze(-1) # -> (*, N_head, N_query_points, 3, N_res, 1)
+        
+        qk_point = warped_qp - warped_kp.mT # -> (*, N_head, N_query_points, 3, N_res, N_res)
+
+        qk_point = torch.linalg.vector_norm(qk_point, dim=-3) # -> (*, N_head, N_query_points, N_res, N_res)
+
+        qk_point = qk_point ** 2
+        qk_point = torch.sum(qk_point, dim=-3, keepdim=False) # -> (*, N_head, N_res, N_res)
+
+        qk_point = gamma * w_C * qk_point / 2
+
+        att_scores = torch.softmax(w_L * (qk + b - qk_point), dim=-1)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -184,8 +278,36 @@ class InvariantPointAttention(nn.Module):
         #     the value points and their norm.                                   #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        # (*, N_head, N_res, N_res) *  (*, N_res, N_res, c_z)
+        pairwise_out = torch.einsum('...hij,...ijc->...hic', att_scores, z) # -> (*, N_res, N_head, c_z)
+        pairwise_out = pairwise_out.movedim(-3, -2).flatten(start_dim=-2) # -> (*, N_res, N_head*c_z)
+
+        # (*, N_head, N_res, N_res) * (*, N_head, N_res, c)
+        v_out = torch.einsum('...hij,...hjc->...hic', att_scores, v) # -> (*, N_head, N_res, c)
+        v_out = v_out.movedim(-3, -2)
+        v_out = v_out.flatten(start_dim=-2) # -> (*, N_res, N_head*c)
+
+        # broadcast T
+        T = T.unsqueeze(-4).unsqueeze(-4)
+        T = torch.broadcast_to(T, vp.shape[:-1]+(4,4)) # -> (*, N_head, N_point_values, N_res, 4, 4)
+
+        # warp vp
+        vp = warp_3d_point(T, vp) # -> (*, N_head, N_point_values, N_res, 3)
+
+        # compute vp attention (*, N_head, N_res, N_res) * (*, N_head, N_point_values, N_res, 3)
+        vp_out = torch.einsum('...hij,...hpjc->...hpic', att_scores, vp) # -> (*, N_head, N_point_values, N_res, 3)
+
+        # warp vp attention with T-1
+        vp_out = warp_3d_point(invert_4x4_transform(T), vp_out) # -> (*, N_head, N_point_values, N_res, 3)
+        vp_out = torch.einsum('...hpic->...ichp', vp_out) # -> (*, N_res, 3, N_head, N_point_values)
+
+    
+        vp_out_norm = torch.linalg.vector_norm(vp_out, dim=-3, keepdim=True)
+
+        # vp_out -> (*, N_res, N_head*3*N_point_values)
+        vp_out = vp_out.flatten(start_dim=-3)
+
+        vp_out_norm = vp_out_norm.flatten(start_dim=-3) # -> (*, N_res, N_head*N_point_values)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -214,8 +336,15 @@ class InvariantPointAttention(nn.Module):
         # TODO: Implement the forward pass by combining all the methods above.   #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        q, k, v, qp, kp, vp = self.prepare_qkv(s)
+
+        att_scores = self.compute_attention_scores(q, k, qp, kp, z, T)
+
+        v_out, vp_out, vp_out_norm, pairwise_out = self.compute_outputs(att_scores, z, v, vp, T)
+
+        out = torch.cat((v_out, vp_out, vp_out_norm, pairwise_out), dim=-1)
+
+        out = self.linear_out(out)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #

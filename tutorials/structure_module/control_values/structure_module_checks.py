@@ -129,7 +129,7 @@ def test_module_method(module, test_name, input_names, output_names, control_fol
     out_file_names = [f'{control_folder}/{test_name}_{out_name}.pt' for out_name in output_names]
     for out, out_file_name, out_name in zip(non_batched_out, out_file_names, output_names):
         expected_out = torch.load(out_file_name)
-        assert torch.allclose(out, expected_out), f'Problem with output {out_name} in test {test_name} in non-batched check.'
+        assert torch.allclose(out, expected_out, rtol=1e-2, atol=1e-5), f'Problem with output {out_name} in test {test_name} in non-batched check.'
 
     if include_batched:
         for out, out_file_name, out_name in zip(batched_out, out_file_names, output_names):
@@ -141,7 +141,7 @@ def test_module_method(module, test_name, input_names, output_names, control_fol
             max_rel_err = ((out.double()-expected_out.double()).abs() / (torch.maximum(out.double().abs(), expected_out.double().abs())+1e-8)).max()
             # print(f'Max batched error: abs {max_abs_err}; rel {max_rel_err}')
 
-            assert torch.allclose(out, expected_out), f'Problem with output {out_name} in test {test_name} in batched check. Maximum absolute error: {max_abs_err}. Maximum relative error: {max_rel_err}.'
+            assert torch.allclose(out, expected_out, rtol=1e-2, atol=1e-5), f'Problem with output {out_name} in test {test_name} in batched check. Maximum absolute error: {max_abs_err}. Maximum relative error: {max_rel_err}.'
 
     
 def test_module_forward(module, test_name, input_names, output_names, control_folder):

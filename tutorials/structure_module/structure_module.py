@@ -27,8 +27,13 @@ class StructureModuleTransition(nn.Module):
         #   initialize dropout, but this is not relevant for evaluation.         #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.linear_1 = nn.Linear(c_s, c_s)
+        self.linear_2 = nn.Linear(c_s, c_s)
+        self.linear_3 = nn.Linear(c_s, c_s)
+
+        self.layer_norm = nn.LayerNorm(c_s)
+        self.ReLU = nn.ReLU()
+        self.dropout = nn.Dropout(0.1)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -50,8 +55,8 @@ class StructureModuleTransition(nn.Module):
         # TODO: Implement the forward pass.                                      #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        s = s + self.linear_3(self.ReLU(self.linear_2(self.ReLU(self.linear_1(s)))))
+        s = self.layer_norm(self.dropout(s))
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -77,8 +82,7 @@ class BackboneUpdate(nn.Module):
         # TODO: Initialize the module 'linear' for use in BackboneUpdate.        #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.linear = nn.Linear(c_s, 6)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -109,9 +113,16 @@ class BackboneUpdate(nn.Module):
         #   - Assemble the 4x4 transforms from R and t.                          #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        bcdt = self.linear(s)
+        bcd = bcdt[..., :3]
+        pad = torch.ones(bcd.shape[:-1]+(1,), device=bcdt.device, dtype=bcdt.dtype)
+        q = torch.cat((pad, bcd), dim=-1)
+        q = q / torch.linalg.vector_norm(q, dim=-1, keepdim=True)
 
+        t = bcdt[..., 3:]
+
+        R = quat_to_3x3_rotation(q)
+        T = assemble_4x4_transform(R, t)
         ##########################################################################
         #               END OF YOUR CODE                                         #
         ##########################################################################
@@ -138,8 +149,9 @@ class AngleResNetLayer(nn.Module):
         #   Algorithm 20.                                                        #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.linear_1 = nn.Linear(c, c)
+        self.linear_2 = nn.Linear(c, c)
+        self.ReLU = nn.ReLU()
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -161,8 +173,7 @@ class AngleResNetLayer(nn.Module):
         # TODO: Implement the forward pass for AngleResNetLayer.                 #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        a = a + self.linear_2(self.ReLU(self.linear_1(self.ReLU(a))))
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -196,8 +207,11 @@ class AngleResNet(nn.Module):
         #   two outputs per torsion angle.                                       #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.linear_in = nn.Linear(c_s, c)
+        self.linear_initial = nn.Linear(c_s, c)
+        self.layers = nn.ModuleList([AngleResNetLayer(c), AngleResNetLayer(c)])
+        self.linear_out = nn.Linear(c, 2*n_torsion_angles)
+        self.ReLU = nn.ReLU()
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -223,8 +237,12 @@ class AngleResNet(nn.Module):
         # TODO: Implement the forward pass for the module.                       #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        a = self.linear_in(self.ReLU(s)) + self.linear_initial(self.ReLU(s_initial))
+        for layer in self.layers:
+            a = layer(a)
+
+        alpha = self.linear_out(self.ReLU(a))
+        alpha = alpha.view(*alpha.shape[:-1], self.n_torsion_angles, 2)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -261,8 +279,19 @@ class StructureModule(nn.Module):
         #   layer_norm_ipa, ipa, transition, bb_update, and angle_resnet.        #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        self.layer_norm_s = nn.LayerNorm(c_s)
+        self.layer_norm_z = nn.LayerNorm(c_z)
+
+        self.linear_in = nn.Linear(c_s, c_s)
+
+        self.layer_norm_ipa = nn.LayerNorm(c_s)
+        self.ipa = InvariantPointAttention(c_s, c_z)
+
+        self.transition = StructureModuleTransition(c_s)
+
+        self.bb_update = BackboneUpdate(c_s)
+
+        self.angle_resnet = AngleResNet(c_s, c)
 
         ##########################################################################
         #               END OF YOUR CODE                                         #
@@ -298,7 +327,6 @@ class StructureModule(nn.Module):
         #       nanometers to Angstrom.                                          #
         #   - Use compute_all_atom_coordinates to compute the final positions    #
         #       and the position mask.                                           #
-        #   - Clone T and scale the translation vector by 10, to switch from     #
         #   - Use residue_constants.atom_types to compute the indices for the    #
         #       c_alpha atoms and the c_beta atoms.                              #
         #   - Use residue_constants.restypes to compute the index for glycine.   #
@@ -308,9 +336,25 @@ class StructureModule(nn.Module):
         #       alpha positions where F is equal to the index of glycine.        #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        T_scaled = T.clone()
+        T_scaled[..., :, :3, 3:] = T_scaled[..., :, :3, 3:] * 10
 
+        # (*, N_res, 37, 3), (*, N_res, 37)
+        final_positions, position_mask = compute_all_atom_coordinates(T_scaled, alpha, F)
+
+        c_alpha_index = residue_constants.atom_types.index('CA')
+        c_beta_index = residue_constants.atom_types.index('CB')
+
+        glycine_index = residue_constants.restypes.index('G')
+        
+        pseudo_beta_positions = final_positions[..., :, c_beta_index, :] # (*, N_res, 3)
+
+        is_glycine = F == glycine_index # (*, N_res)
+
+
+        glycine_final_positions = final_positions[is_glycine] # (*, ?, 37, 3)
+
+        pseudo_beta_positions[is_glycine] = glycine_final_positions[..., :, c_alpha_index, :]
         ##########################################################################
         #               END OF YOUR CODE                                         #
         ##########################################################################
@@ -357,9 +401,40 @@ class StructureModule(nn.Module):
         #   - Call process_outputs and add the results to the output dict.       #
         ##########################################################################
 
-        # Replace "pass" statement with your code
-        pass
+        s_initial = self.layer_norm_s(s)
+        z = self.layer_norm_z(z)
+        s = self.linear_in(s_initial)
+        T = torch.eye(4, device=device, dtype=dtype)
+        T = torch.broadcast_to(T, batch_dim+(N_res,4,4))
 
+        for l in range(self.n_layer):
+            s = self.ipa(s, z, T)
+            s = self.layer_norm_ipa(s)
+
+            # Transition
+            s = self.transition(s)
+
+            # backbone update
+            T = T @ self.bb_update(s)
+
+            # predict torsion angles
+            alpha = self.angle_resnet(s, s_initial) # (, N_res, n_torsion_angles, 2)
+
+
+            # Append angles and frames
+            outputs['frames'].append(T)
+            outputs['angles'].append(alpha)
+
+            # Skip loss computation
+
+        outputs['frames'] = torch.stack(outputs['frames'], dim=-4)
+        outputs['angles'] = torch.stack(outputs['angles'], dim=-4)
+
+        final_positions, position_mask, pseudo_beta_positions = self.process_outputs(T, alpha, F)
+
+        outputs['final_positions'] = final_positions
+        outputs['position_mask'] = position_mask
+        outputs['pseudo_beta_positions'] = pseudo_beta_positions
         ##########################################################################
         #               END OF YOUR CODE                                         #
         ##########################################################################
